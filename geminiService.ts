@@ -1,76 +1,45 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { AnalysisResult, DocumentSource, RiskLevel } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+const ai = new GoogleGenerativeAI(apiKey);
 
-/**
- * Optimized analysis for speed and reliability.
- * Focuses on key legal sections rather than every single line to prevent timeouts.
- */
+export { ai };
+
 export const analyzeDocument = async (source: DocumentSource): Promise<AnalysisResult> => {
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          parts: [
-            {
-              inlineData: {
-                data: source.data,
-                mimeType: source.mimeType
-              }
-            },
-            {
-              text: `Analyze this legal document. 
-              
-              INSTRUCTIONS:
-              1. Identify and group the document's content into the most critical logical clauses/sections.
-              2. For each identified section, provide:
-                 - A short reference ID (e.g., "Section 1.1", "Termination Clause").
-                 - The most important verbatim quote from that section.
-                 - A single, clear explanation in plain English.
-                 - A risk assessment (SAFE, CAUTION, or DANGER).
-                 - Explicitly list the RIGHTS and OBLIGATIONS for the user found in that specific section.
-              3. Provide a high-level summary of the entire document.
-
-              STRICT GROUNDING: 
-              - Use ONLY the provided document. 
-              - If information for a field is missing, do not guess.
-              - Output MUST be valid JSON.`
-            }
-          ]
-        }
-      ],
-      config: {
+    // UPDATED: Changed model to gemini-2.5-flash
+    const model = ai.getGenerativeModel({ 
+      model: "gemini-2.5-flash", 
+      generationConfig: {
         responseMimeType: "application/json",
         responseSchema: {
-          type: Type.OBJECT,
+          type: SchemaType.OBJECT,
           properties: {
-            title: { type: Type.STRING },
+            title: { type: SchemaType.STRING },
             clauses: {
-              type: Type.ARRAY,
+              type: SchemaType.ARRAY,
               items: {
-                type: Type.OBJECT,
+                type: SchemaType.OBJECT,
                 properties: {
-                  id: { type: Type.STRING },
-                  originalText: { type: Type.STRING },
-                  simpleExplanation: { type: Type.STRING },
-                  riskLevel: { type: Type.STRING, enum: Object.values(RiskLevel) },
-                  riskJustification: { type: Type.STRING },
-                  obligations: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  rights: { type: Type.ARRAY, items: { type: Type.STRING } }
+                  id: { type: SchemaType.STRING },
+                  originalText: { type: SchemaType.STRING },
+                  simpleExplanation: { type: SchemaType.STRING },
+                  riskLevel: { type: SchemaType.STRING, enum: Object.values(RiskLevel) },
+                  riskJustification: { type: SchemaType.STRING },
+                  obligations: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+                  rights: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
                 },
                 required: ["id", "originalText", "simpleExplanation", "riskLevel", "riskJustification", "obligations", "rights"]
               }
             },
             summary: {
-              type: Type.OBJECT,
+              type: SchemaType.OBJECT,
               properties: {
-                overview: { type: Type.STRING },
-                keyRisks: { type: Type.ARRAY, items: { type: Type.STRING } },
-                suggestedActions: { type: Type.ARRAY, items: { type: Type.STRING } },
-                criticalClauses: { type: Type.ARRAY, items: { type: Type.STRING } }
+                overview: { type: SchemaType.STRING },
+                keyRisks: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+                suggestedActions: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+                criticalClauses: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } }
               },
               required: ["overview", "keyRisks", "suggestedActions"]
             }
@@ -80,62 +49,54 @@ export const analyzeDocument = async (source: DocumentSource): Promise<AnalysisR
       }
     });
 
-    const text = response.text;
-    if (!text) throw new Error("No data returned from analysis engine.");
-    
-    // Attempt to parse directly; if fail, try cleaning
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      const cleaned = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      return JSON.parse(cleaned);
-    }
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          data: source.data,
+          mimeType: source.mimeType
+        }
+      },
+      { text: "Analyze this legal document. Output MUST be valid JSON." }
+    ]);
+
+    const response = await result.response;
+    const text = response.text();
+    return JSON.parse(text);
   } catch (error: any) {
     console.error("NYAYA Analysis Error:", error);
-    throw new Error(error.message || "The document analysis timed out. Please try a smaller file or a clearer PDF.");
+    throw new Error(error.message || "Analysis failed.");
   }
 };
 
-/**
- * Strictly grounded Q&A.
- */
 export const chatWithDocument = async (
   source: DocumentSource,
   history: { role: 'user' | 'assistant'; content: string }[],
   question: string
 ): Promise<string> => {
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: [
-        {
-          parts: [
-            {
-              inlineData: {
-                data: source.data,
-                mimeType: source.mimeType
-              }
-            },
-            {
-              text: `You are NYAYA AI. You interpret legal documents verbatim. 
-              Only use the provided text. If not found, say it is missing.`
-            }
-          ]
-        },
-        ...history.map(msg => ({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }]
-        })),
-        {
-          role: 'user',
-          parts: [{ text: question }]
-        }
-      ]
-    });
+    // UPDATED: Changed model to gemini-2.5-flash
+    const model = ai.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-    return response.text || "This information is not mentioned in the document.";
+    const contents = [
+      {
+        role: "user",
+        parts: [
+          { inlineData: { data: source.data, mimeType: source.mimeType } },
+          { text: "You are NYAYA AI. Use the provided text to answer." }
+        ]
+      },
+      ...history.map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.content }]
+      })),
+      { role: 'user', parts: [{ text: question }] }
+    ];
+
+    const result = await model.generateContent({ contents });
+    const response = await result.response;
+    return response.text();
   } catch (error: any) {
     console.error("NYAYA Chat Error:", error);
-    return "Verification failed. Please try a simpler question.";
+    return "Verification failed.";
   }
 };
